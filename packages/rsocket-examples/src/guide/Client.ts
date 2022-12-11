@@ -72,7 +72,38 @@ async function requestResponse(
           );
           resolve(payload);
         },
-        onComplete: () => {},
+        onComplete: () => {
+          resolve({});
+        },
+        onExtension: () => {},
+      }
+    );
+  });
+}
+
+function listenForMessages(rsocket: RSocket): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const requester = rsocket.requestStream(
+      {
+        data: Buffer.from(""),
+        metadata: createRoute("messages.incoming"),
+      },
+      10000,
+      {
+        onError: (e) => reject(e),
+        onNext: (payload, isComplete) => {
+          Logger.info(
+            `[client] payload[data: ${payload.data}; metadata: ${payload.metadata}]|isComplete: ${isComplete}`
+          );
+
+          if (isComplete) {
+            resolve(null);
+          }
+        },
+        onComplete: () => {
+          resolve(null);
+          requester.cancel();
+        },
         onExtension: () => {},
       }
     );
@@ -92,71 +123,17 @@ async function main() {
     '{"user":"user1", "content":"a message"}'
   );
 
-  await new Promise((resolve, reject) => {
-    let payloadsReceived = 0;
-    const maxPayloads = 10;
-    const requester = rsocket.requestStream(
-      {
-        data: Buffer.from("Hello World"),
-        // metadata: createRoute("messages.incoming"),
-      },
-      3,
-      {
-        onError: (e) => reject(e),
-        onNext: (payload, isComplete) => {
-          Logger.info(
-            `[client] payload[data: ${payload.data}; metadata: ${payload.metadata}]|isComplete: ${isComplete}`
-          );
+  const listener = listenForMessages(rsocket);
 
-          payloadsReceived++;
+  await requestResponse(rsocket, "channel.join", "channel1");
 
-          // request 5 more payloads event 5th payload, until a max total payloads received
-          if (payloadsReceived % 2 == 0 && payloadsReceived < maxPayloads) {
-            requester.request(2);
-          } else if (payloadsReceived >= maxPayloads) {
-            requester.cancel();
-            setTimeout(() => {
-              resolve(null);
-            });
-          }
+  await requestResponse(
+    rsocket,
+    "message",
+    '{"channel":"channel1", "content":"a channel message"}'
+  );
 
-          if (isComplete) {
-            resolve(null);
-          }
-        },
-        onComplete: () => {
-          resolve(null);
-        },
-        onExtension: () => {},
-      }
-    );
-  });
-  // await new Promise((resolve, reject) => {
-  //   const requester = rsocket.requestStream(
-  //     {
-  //       data: Buffer.from(""),
-  //       metadata: createRoute("messages.incoming"),
-  //     },
-  //     10000,
-  //     {
-  //       onError: (e) => reject(e),
-  //       onNext: (payload, isComplete) => {
-  //         Logger.info(
-  //           `[client] payload[data: ${payload.data}; metadata: ${payload.metadata}]|isComplete: ${isComplete}`
-  //         );
-  //
-  //         if (isComplete) {
-  //           resolve(null);
-  //         }
-  //       },
-  //       onComplete: () => {
-  //         resolve(null);
-  //         requester.cancel();
-  //       },
-  //       onExtension: () => {},
-  //     }
-  //   );
-  // });
+  await listener;
 }
 
 main()
