@@ -42,6 +42,10 @@ function makeConnector() {
   });
 }
 
+const sleep = (milliseconds) => {
+  return new Promise(resolve => setTimeout(resolve, milliseconds))
+}
+
 function createRoute(route?: string) {
   let compositeMetaData = undefined;
   if (route) {
@@ -141,9 +145,10 @@ function listenForMessages(rsocket: RSocket): StreamControl {
         },
       }
     );
-    result.cancel = function () {
+    result.cancel = async function () {
       result.requester.cancel();
       resolve(null);
+      await result.promise;
     }
   });
 
@@ -179,15 +184,18 @@ async function listValues(rsocket: RSocket, route?: string, data?: string) {
 }
 
 async function messagesExamples(client1: RSocket, client2: RSocket) {
+
+  const listener1 = listenForMessages(client1);
+  const listener2 = listenForMessages(client2);
+
   await requestResponse(
     client1,
     "message",
-    '{"user":"user1", "content":"a message"}'
+    '{"user":"user2", "content":"a message"}'
   );
 
-  const listener = listenForMessages(client1);
-
   await requestResponse(client1, "channel.join", "channel1");
+  await requestResponse(client2, "channel.join", "channel1");
 
   await requestResponse(
     client1,
@@ -198,8 +206,13 @@ async function messagesExamples(client1: RSocket, client2: RSocket) {
   const channels = await listValues(client1, "channels");
   Logger.info(`channels ${channels}`);
 
-  listener.cancel();
-  await listener.promise;
+  const task = async () => {
+    await sleep(1000);
+    await listener1.cancel();
+    await listener2.cancel();
+  }
+
+  await task();
 }
 
 async function filesExample(client1: RSocket) {
