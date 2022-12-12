@@ -81,6 +81,25 @@ async function requestResponse(
   });
 }
 
+async function fireAndForget(rsocket: RSocket, route?: string, data?: string) {
+  return new Promise((resolve, reject) => {
+    return rsocket.fireAndForget(
+      {
+        data: Buffer.from(data),
+        metadata: createRoute(route),
+      },
+      {
+        onError: (error) => {
+          reject(error);
+        },
+        onComplete: () => {
+          resolve(null);
+        },
+      }
+    );
+  });
+}
+
 function listenForMessages(rsocket: RSocket): Promise<void> {
   return new Promise((resolve, reject) => {
     const requester = rsocket.requestStream(
@@ -130,7 +149,13 @@ async function main() {
   await requestResponse(
     rsocket,
     "message",
-    '{"channel":"channel1", "content":"a channel message"}'
+    JSON.stringify({ channel: "channel1", content: "a channel message" })
+  );
+
+  await fireAndForget(
+    rsocket,
+    "statistics",
+    JSON.stringify({ memory_usage: 123 })
   );
 
   await listener;
