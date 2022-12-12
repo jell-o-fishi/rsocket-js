@@ -14,14 +14,17 @@
  * limitations under the License.
  */
 
-import { MAX_REQUEST_COUNT, RSocket, RSocketConnector } from "rsocket-core";
-import { TcpClientTransport } from "rsocket-tcp-client";
 import {
-  encodeCompositeMetadata,
-  encodeRoute,
-  WellKnownMimeType,
-} from "rsocket-composite-metadata";
-import { exit } from "process";
+  Cancellable,
+  MAX_REQUEST_COUNT,
+  OnExtensionSubscriber,
+  Requestable,
+  RSocket,
+  RSocketConnector
+} from "rsocket-core";
+import {TcpClientTransport} from "rsocket-tcp-client";
+import {encodeCompositeMetadata, encodeRoute, WellKnownMimeType,} from "rsocket-composite-metadata";
+import {exit} from "process";
 import Logger from "../shared/logger";
 import MESSAGE_RSOCKET_ROUTING = WellKnownMimeType.MESSAGE_RSOCKET_ROUTING;
 
@@ -75,7 +78,8 @@ async function requestResponse(
         onComplete: () => {
           resolve({});
         },
-        onExtension: () => {},
+        onExtension: () => {
+        },
       }
     );
   });
@@ -100,9 +104,20 @@ async function fireAndForget(rsocket: RSocket, route?: string, data?: string) {
   });
 }
 
-function listenForMessages(rsocket: RSocket): Promise<void> {
-  return new Promise((resolve, reject) => {
-    rsocket.requestStream(
+interface StreamControl {
+  requester: Requestable & Cancellable & OnExtensionSubscriber
+  promise: Promise<void>,
+  cancel: () => void
+}
+
+function listenForMessages(rsocket: RSocket): StreamControl {
+  let result = {
+    promise: undefined,
+    requester: undefined,
+    cancel: undefined
+  }
+  result.promise = new Promise((resolve, reject) => {
+    result.requester = rsocket.requestStream(
       {
         data: Buffer.from(""),
         metadata: createRoute("messages.incoming"),
@@ -122,13 +137,20 @@ function listenForMessages(rsocket: RSocket): Promise<void> {
         onComplete: () => {
           resolve(null);
         },
-        onExtension: () => {},
+        onExtension: () => {
+        },
       }
     );
+    result.cancel = function () {
+      result.requester.cancel();
+      resolve(null);
+    }
   });
+
+  return result;
 }
 
-async function listValues(rsocket, route?: string, data?: string) {
+async function listValues(rsocket: RSocket, route?: string, data?: string) {
   return new Promise<string[]>((resolve, reject) => {
     const values: string[] = [];
     rsocket.requestStream(
@@ -140,7 +162,7 @@ async function listValues(rsocket, route?: string, data?: string) {
       {
         onError: (e) => reject(e),
         onNext: (payload, isComplete) => {
-          values.push(payload.data);
+          values.push(payload.data.toString());
 
           if (isComplete) {
             resolve(values);
@@ -149,48 +171,65 @@ async function listValues(rsocket, route?: string, data?: string) {
         onComplete: () => {
           resolve(values);
         },
-        onExtension: () => {},
+        onExtension: () => {
+        },
       }
     );
   });
 }
 
-async function main() {
-  const connector = makeConnector();
-
-  const rsocket = await connector.connect();
-
-  await requestResponse(rsocket, "login", "user1");
-
+async function messagesExamples(client1: RSocket, client2: RSocket) {
   await requestResponse(
-    rsocket,
+    client1,
     "message",
     '{"user":"user1", "content":"a message"}'
   );
 
-  const listener = listenForMessages(rsocket);
+  const listener = listenForMessages(client1);
 
-  await requestResponse(rsocket, "channel.join", "channel1");
+  await requestResponse(client1, "channel.join", "channel1");
 
   await requestResponse(
-    rsocket,
+    client1,
     "message",
-    JSON.stringify({ channel: "channel1", content: "a channel message" })
+    JSON.stringify({channel: "channel1", content: "a channel message"})
   );
 
-  await fireAndForget(
-    rsocket,
-    "statistics",
-    JSON.stringify({ memory_usage: 123 })
-  );
-
-  const channels = await listValues(rsocket, "channels");
+  const channels = await listValues(client1, "channels");
   Logger.info(`channels ${channels}`);
 
-  const files = await listValues(rsocket, "files");
-  Logger.info(`files ${files}`);
+  listener.cancel();
+  await listener.promise;
+}
 
-  await listener;
+async function filesExample(client1: RSocket) {
+  const files = await listValues(client1, "files");
+  Logger.info(`files ${files}`);
+}
+
+async function statisticsExample(client1: RSocket) {
+  await fireAndForget(
+    client1,
+    "statistics",
+    JSON.stringify({memory_usage: 123})
+  );
+
+}
+
+async function main() {
+  const connector1 = makeConnector();
+  const connector2 = makeConnector();
+
+  const client1 = await connector1.connect();
+  const client2 = await connector2.connect();
+
+  await requestResponse(client1, "login", "user1");
+  await requestResponse(client2, "login", "user2");
+
+  await messagesExamples(client1, client2);
+  await filesExample(client1);
+  await statisticsExample(client1);
+
 }
 
 main()
