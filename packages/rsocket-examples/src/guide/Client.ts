@@ -17,7 +17,7 @@
 import {
   Cancellable,
   MAX_REQUEST_COUNT,
-  OnExtensionSubscriber,
+  OnExtensionSubscriber, OnNextSubscriber, OnTerminalSubscriber,
   Requestable,
   RSocket,
   RSocketConnector
@@ -75,7 +75,7 @@ async function requestResponse(
         },
         onNext: (payload, isComplete) => {
           Logger.info(
-            `payload[data: ${payload.data}; metadata: ${payload.metadata}]|${isComplete}`
+            `${payload.data}`
           );
           resolve(payload);
         },
@@ -110,17 +110,15 @@ async function fireAndForget(rsocket: RSocket, route?: string, data?: string) {
 
 interface StreamControl {
   requester: Requestable & Cancellable & OnExtensionSubscriber
-  promise: Promise<void>,
   cancel: () => void
 }
 
 function listenForMessages(rsocket: RSocket): StreamControl {
   let result = {
-    promise: undefined,
     requester: undefined,
     cancel: undefined
   }
-  result.promise = new Promise((resolve, reject) => {
+  const promise = new Promise((resolve, reject) => {
     result.requester = rsocket.requestStream(
       {
         data: Buffer.from(""),
@@ -131,7 +129,7 @@ function listenForMessages(rsocket: RSocket): StreamControl {
         onError: (e) => reject(e),
         onNext: (payload, isComplete) => {
           Logger.info(
-            `[client] payload[data: ${payload.data}; metadata: ${payload.metadata}]|isComplete: ${isComplete}`
+            `${payload.data}`
           );
 
           if (isComplete) {
@@ -148,9 +146,88 @@ function listenForMessages(rsocket: RSocket): StreamControl {
     result.cancel = async function () {
       result.requester.cancel();
       resolve(null);
-      await result.promise;
+      await promise;
     }
   });
+
+  return result;
+}
+
+interface StatisticsControl {
+  requester: OnTerminalSubscriber &
+    OnNextSubscriber &
+    OnExtensionSubscriber &
+    Requestable &
+    Cancellable,
+  cancel: () => void,
+  setStatisticIds: (ids: string[]) => void,
+  setPeriodSeconds: (seconds: number) => void
+}
+
+function listenForStatistics(rsocket: RSocket, route?: string, data?: string): StatisticsControl {
+  const result: StatisticsControl = {
+    requester: undefined,
+    cancel: undefined,
+    setStatisticIds: undefined,
+    setPeriodSeconds: undefined
+  };
+  const promise = new Promise((resolve, reject) => {
+    result.requester = rsocket.requestChannel(
+      {
+        data: data == undefined ? undefined : Buffer.from(data),
+        metadata: createRoute("statistics"),
+      },
+      MAX_REQUEST_COUNT,
+      false,
+      {
+        onError: (e) => reject(e),
+        onNext: (payload, isComplete) => {
+          console.log(
+            `${payload.data}`
+          );
+
+          result.requester.request(1);
+
+          if (isComplete) {
+            resolve(payload);
+          }
+        },
+        onComplete: () => {
+          resolve(null);
+        },
+        onExtension: () => {
+        },
+        request: (n) => {
+          console.log(`request(${n})`);
+          result.requester.onNext(
+            {
+              data: Buffer.from("Message"),
+            },
+            true
+          );
+        },
+        cancel: () => {
+        },
+      }
+    );
+    result.cancel = async function () {
+      result.requester.cancel();
+      resolve(null);
+      await promise;
+    }
+  });
+
+  result.setStatisticIds = function(ids:string[]) {
+    result.requester.onNext({
+      data: Buffer.from(JSON.stringify({ids:ids}))
+    }, false);
+  }
+
+  result.setPeriodSeconds = function(seconds:number) {
+    result.requester.onNext({
+      data: Buffer.from(JSON.stringify({period_seconds: seconds}))
+    }, false);
+  }
 
   return result;
 }
@@ -206,13 +283,9 @@ async function messagesExamples(client1: RSocket, client2: RSocket) {
   const channels = await listValues(client1, "channels");
   Logger.info(`channels ${channels}`);
 
-  const task = async () => {
-    await sleep(1000);
-    await listener1.cancel();
-    await listener2.cancel();
-  }
-
-  await task();
+  await sleep(1000);
+  await listener1.cancel();
+  await listener2.cancel();
 }
 
 async function filesExample(client1: RSocket) {
@@ -227,6 +300,14 @@ async function statisticsExample(client1: RSocket) {
     JSON.stringify({memory_usage: 123})
   );
 
+  const control = listenForStatistics(client1, "statistics");
+
+  await sleep(5000);
+  control.setStatisticIds(['users']);
+
+  await sleep(5000);
+
+  await control.cancel();
 }
 
 async function main() {
