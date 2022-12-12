@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { RSocket, RSocketConnector } from "rsocket-core";
+import { MAX_REQUEST_COUNT, RSocket, RSocketConnector } from "rsocket-core";
 import { TcpClientTransport } from "rsocket-tcp-client";
 import {
   encodeCompositeMetadata,
@@ -102,12 +102,12 @@ async function fireAndForget(rsocket: RSocket, route?: string, data?: string) {
 
 function listenForMessages(rsocket: RSocket): Promise<void> {
   return new Promise((resolve, reject) => {
-    const requester = rsocket.requestStream(
+    rsocket.requestStream(
       {
         data: Buffer.from(""),
         metadata: createRoute("messages.incoming"),
       },
-      10000,
+      MAX_REQUEST_COUNT,
       {
         onError: (e) => reject(e),
         onNext: (payload, isComplete) => {
@@ -121,7 +121,33 @@ function listenForMessages(rsocket: RSocket): Promise<void> {
         },
         onComplete: () => {
           resolve(null);
-          requester.cancel();
+        },
+        onExtension: () => {},
+      }
+    );
+  });
+}
+
+async function listValues(rsocket, route?: string, data?: string) {
+  return new Promise<string[]>((resolve, reject) => {
+    const values: string[] = [];
+    rsocket.requestStream(
+      {
+        data: data == undefined ? undefined : Buffer.from(data),
+        metadata: createRoute(route),
+      },
+      MAX_REQUEST_COUNT,
+      {
+        onError: (e) => reject(e),
+        onNext: (payload, isComplete) => {
+          values.push(payload.data);
+
+          if (isComplete) {
+            resolve(values);
+          }
+        },
+        onComplete: () => {
+          resolve(values);
         },
         onExtension: () => {},
       }
@@ -157,6 +183,12 @@ async function main() {
     "statistics",
     JSON.stringify({ memory_usage: 123 })
   );
+
+  const channels = await listValues(rsocket, "channels");
+  Logger.info(`channels ${channels}`);
+
+  const files = await listValues(rsocket, "files");
+  Logger.info(`files ${files}`);
 
   await listener;
 }
