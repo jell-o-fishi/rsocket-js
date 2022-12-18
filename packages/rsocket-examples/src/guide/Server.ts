@@ -25,14 +25,14 @@ import {
   RSocketError,
   RSocketServer,
 } from "rsocket-core";
-import { TcpServerTransport } from "rsocket-tcp-server";
+import {TcpServerTransport} from "rsocket-tcp-server";
 import {
   decodeCompositeMetadata,
   decodeRoutes,
   WellKnownMimeType,
 } from "rsocket-composite-metadata";
-import { exit } from "process";
-import { queue } from "async";
+import {exit} from "process";
+import {queue} from "async";
 import MESSAGE_RSOCKET_ROUTING = WellKnownMimeType.MESSAGE_RSOCKET_ROUTING;
 import Logger from "../shared/logger";
 
@@ -59,13 +59,20 @@ function mapMetaData(payload: Payload) {
   return mappedMetaData;
 }
 
+class ChatChannel {
+  name: string;
+  users: Set<string>;
+  messages: queue;
+}
+
 class ChatServiceSession {
   sessionId: string;
   username: string;
   messages: queue;
   messageListeningStream: OnNextSubscriber;
 
-  constructor(private shared: ChatServiceShared) {}
+  constructor(private shared: ChatServiceShared) {
+  }
 
   handleLogin(
     responderStream: OnTerminalSubscriber &
@@ -76,6 +83,8 @@ class ChatServiceSession {
     const timeout = setTimeout(() => {
       this.username = payload.data.toString("utf8");
       this.sessionId = payload.data.toString("utf8"); // todo replace with uuid4 generation
+      this.shared.sessionById.set(this.sessionId, this);
+
       const self = this;
       this.messages = queue(function (task, callback) {
         self.messageListeningStream.onNext(
@@ -160,10 +169,8 @@ class ChatServiceSession {
 }
 
 class ChatServiceShared {
-  sessionById: Map<number, ChatServiceSession> = new Map<
-    number,
-    ChatServiceSession
-  >();
+  sessionById: Map<string, ChatServiceSession> = new Map<string, ChatServiceSession>();
+  channelsByName: Map<string, ChatChannel> = new Map<string, ChatChannel>();
 }
 
 function makeServer() {
@@ -179,6 +186,15 @@ function makeServer() {
       accept: async () => {
         const chatServiceSession = new ChatServiceSession(chatService);
         return {
+          fireAndForget(
+            payload: Payload,
+            responderStream: OnTerminalSubscriber
+          ): Cancellable {
+            return {
+              cancel(): void {
+              }
+            }
+          },
           requestResponse: (
             payload: Payload,
             responderStream: OnTerminalSubscriber &
@@ -191,7 +207,8 @@ function makeServer() {
               cancel() {
                 console.log("cancelled");
               },
-              onExtension() {},
+              onExtension() {
+              },
             };
 
             const route = mappedMetaData.get(
@@ -245,8 +262,10 @@ function makeServer() {
               cancel() {
                 console.log("cancelled");
               },
-              request(n) {},
-              onExtension() {},
+              request(n) {
+              },
+              onExtension() {
+              },
             };
 
             const route = mappedMetaData.get(
@@ -295,7 +314,8 @@ function makeServer() {
                       `[server] request n: ${n}, requestedResponses: ${requestedResponses}, sentResponses: ${sentResponses}`
                     );
                   },
-                  onExtension: () => {},
+                  onExtension: () => {
+                  },
                 };
               }
               default:
@@ -303,10 +323,52 @@ function makeServer() {
                   cancel() {
                     Logger.info("[server] stream cancelled by client");
                   },
-                  request(n) {},
-                  onExtension: () => {},
+                  request(n) {
+                  },
+                  onExtension: () => {
+                  },
                 };
             }
+          },
+          requestChannel: (
+            payload: Payload,
+            initialRequestN: number,
+            isCompleted: boolean,
+            responderStream: OnTerminalSubscriber &
+              OnNextSubscriber &
+              OnExtensionSubscriber &
+              Requestable &
+              Cancellable
+          ): OnTerminalSubscriber &
+            OnNextSubscriber &
+            OnExtensionSubscriber &
+            Requestable &
+            Cancellable => {
+            responderStream.onNext(payload, isCompleted);
+            responderStream.request(initialRequestN);
+
+            return {
+              cancel(): void {
+                responderStream.cancel();
+              },
+              onComplete(): void {
+                responderStream.onComplete();
+              },
+              onError(error: Error): void {
+                responderStream.onError(error);
+              },
+              onExtension(): void {
+              },
+              onNext(payload: Payload, isComplete: boolean): void {
+                setTimeout(
+                  () => responderStream.onNext(payload, isComplete),
+                  10
+                );
+              },
+              request(requestN: number): void {
+                setTimeout(() => responderStream.request(requestN), 1);
+              },
+            };
           },
         };
       },
