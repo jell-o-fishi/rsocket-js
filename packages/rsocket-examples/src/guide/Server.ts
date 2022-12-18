@@ -61,7 +61,7 @@ function mapMetaData(payload: Payload) {
 
 class ChatChannel {
   name: string;
-  users: Set<string>;
+  users: Set<string> = new Set<string>();
   messages: queue;
 }
 
@@ -86,10 +86,10 @@ class ChatServiceSession {
       this.shared.sessionById.set(this.sessionId, this);
 
       const self = this;
-      this.messages = queue(function (task, callback) {
+      this.messages = queue(function (message, callback) {
         self.messageListeningStream.onNext(
           {
-            data: Buffer.from(task),
+            data: Buffer.from(JSON.stringify(message)),
           },
           false
         );
@@ -105,10 +105,8 @@ class ChatServiceSession {
     return {
       cancel: () => {
         clearTimeout(timeout);
-        console.log("cancelled");
       },
       onExtension: () => {
-        console.log("Received Extension request");
       },
     };
   }
@@ -120,22 +118,16 @@ class ChatServiceSession {
     payload: Payload
   ) {
     const timeout = setTimeout(() => {
-      this.username = payload.data.toString("utf8");
+      const message = payload.data.toString("utf8");
       this.sessionId = payload.data.toString("utf8"); // todo replace with uuid4 generation
-      return responderStream.onNext(
-        {
-          data: Buffer.concat([Buffer.from("Echo: "), payload.data]),
-        },
-        true
-      );
+      return responderStream.onNext({data: null}, true);
     }, 1000);
+
     return {
       cancel: () => {
         clearTimeout(timeout);
-        console.log("cancelled");
       },
       onExtension: () => {
-        console.log("Received Extension request");
       },
     };
   }
@@ -147,22 +139,36 @@ class ChatServiceSession {
     payload: Payload
   ) {
     const timeout = setTimeout(() => {
-      this.username = payload.data.toString("utf8");
-      this.sessionId = payload.data.toString("utf8"); // todo replace with uuid4 generation
-      return responderStream.onNext(
-        {
-          data: Buffer.concat([Buffer.from("Echo: "), payload.data]),
-        },
-        true
-      );
+      const channelName = payload.data.toString();
+      ensureChannel(channelName, this.shared);
+      this.shared.channelsByName.get(channelName).users.add(this.sessionId);
+      return responderStream.onNext({data: null}, true);
     }, 1000);
     return {
       cancel: () => {
         clearTimeout(timeout);
-        console.log("cancelled");
       },
       onExtension: () => {
-        console.log("Received Extension request");
+      },
+    };
+  }
+
+  leaveChannel(
+    responderStream: OnTerminalSubscriber &
+      OnNextSubscriber &
+      OnExtensionSubscriber,
+    payload: Payload
+  ) {
+    const timeout = setTimeout(() => {
+      const channelName = payload.data.toString();
+      this.shared.channelsByName.get(channelName).users.delete(this.sessionId);
+      return responderStream.onNext({data: null}, true);
+    }, 1000);
+    return {
+      cancel: () => {
+        clearTimeout(timeout);
+      },
+      onExtension: () => {
       },
     };
   }
@@ -171,6 +177,21 @@ class ChatServiceSession {
 class ChatServiceShared {
   sessionById: Map<string, ChatServiceSession> = new Map<string, ChatServiceSession>();
   channelsByName: Map<string, ChatChannel> = new Map<string, ChatChannel>();
+}
+
+function ensureChannel(channelName: string, shared: ChatServiceShared) {
+  if (!shared.channelsByName.has(channelName)) {
+    const channel = new ChatChannel();
+    channel.name = channelName;
+    shared.channelsByName.set(channelName, channel);
+
+    channel.messages = queue(function (message, callback) {
+      for (const userSessionId of channel.users) {
+        const user = shared.sessionById.get(userSessionId);
+        user.messages.push(message);
+      }
+    });
+  }
 }
 
 function makeServer() {
@@ -230,6 +251,9 @@ function makeServer() {
               }
               case "channel.join": {
                 return chatServiceSession.joinChannel(responderStream, payload);
+              }
+              case "channel.leave": {
+                return chatServiceSession.leaveChannel(responderStream, payload);
               }
               case "message": {
                 return chatServiceSession.sendMessage(responderStream, payload);
